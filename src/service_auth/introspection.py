@@ -7,6 +7,7 @@ import httpx
 
 from .errors import AuthenticationFailed, AuthorizationServiceUnavailable, PermissionDenied
 from .models import ServicePrincipal
+from .observability import record_auth_event
 
 
 class OAuthIntrospectionClient:
@@ -46,20 +47,63 @@ class OAuthIntrospectionClient:
                     break
             except httpx.RequestError:
                 if attempt:
+                    record_auth_event(
+                        "introspection",
+                        outcome="unavailable",
+                        client_id=self.client_id,
+                        audience=self.audience,
+                    )
                     raise AuthorizationServiceUnavailable(
                         "OAuth introspection service unavailable"
                     ) from None
             await asyncio.sleep(0)
         if response is None or response.status_code >= 500:
+            record_auth_event(
+                "introspection",
+                outcome="unavailable",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthorizationServiceUnavailable("OAuth introspection service unavailable")
         if response.status_code != 200:
+            record_auth_event(
+                "introspection",
+                outcome="resource_client_rejected",
+                client_id=self.client_id,
+                audience=self.audience,
+                status_code=response.status_code,
+            )
             raise AuthorizationServiceUnavailable("OAuth introspection client rejected")
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            record_auth_event(
+                "introspection",
+                outcome="invalid_response",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
+            raise AuthorizationServiceUnavailable(
+                "Invalid OAuth introspection response"
+            ) from exc
         if not payload.get("active") or payload.get("aud") != self.audience:
+            record_auth_event(
+                "introspection",
+                outcome="invalid_token",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthenticationFailed("Invalid service access token")
         permissions = frozenset(str(payload.get("scope") or "").split())
         missing = required_permissions - permissions
         if missing:
+            record_auth_event(
+                "authorization",
+                outcome="permission_denied",
+                client_id=str(payload.get("client_id") or "unknown"),
+                audience=self.audience,
+                missing_permissions=" ".join(sorted(missing)),
+            )
             raise PermissionDenied("Required service permission is missing")
         try:
             expires_at = datetime.fromtimestamp(int(payload["exp"]), timezone.utc)
@@ -73,7 +117,20 @@ class OAuthIntrospectionClient:
             or not service_name
             or service_name == "None"
         ):
+            record_auth_event(
+                "introspection",
+                outcome="invalid_payload",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthenticationFailed("Invalid service access token")
+        record_auth_event(
+            "introspection",
+            outcome="success",
+            client_id=client_id,
+            service_name=service_name,
+            audience=self.audience,
+        )
         return ServicePrincipal(
             client_id=client_id,
             service_name=service_name,

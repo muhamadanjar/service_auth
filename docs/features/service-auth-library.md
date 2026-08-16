@@ -6,6 +6,8 @@ Execution Progress: [Python Service Auth Library Progress](../progress/service-a
 
 `base-project-service-auth` is the shared contract for machine-to-machine HTTP authentication between Python services.
 
+The package is currently internal-only. Service requirements use `-e ../service_auth`; container images must therefore be built from the monorepo `services/` directory so the sibling source exists at build and runtime. Publishing to a package registry is not required for this rollout.
+
 ## Caller usage
 
 Use `OAuthServiceClient` in async API code and `SyncOAuthServiceClient` in synchronous workers. Both request `client_credentials` tokens for exactly one audience and a fixed permission set, keep the token only in process memory, and renew it once fewer than 60 seconds remain.
@@ -39,6 +41,8 @@ principal = Depends(
 ```
 
 The resulting `ServicePrincipal` contains `client_id`, stable `service_name`, `audience`, permissions, and expiry. Tokens and client secrets are private fields and never included in library errors.
+
+Token acquisition, introspection, authorization denial, and legacy-token compatibility emit structured `service_auth.events` records. These records contain client/audience/outcome metadata only and can be converted into log-based counters and latency alerts.
 
 ## Delegated user requests
 

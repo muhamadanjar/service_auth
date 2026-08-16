@@ -8,6 +8,7 @@ from time import monotonic
 import httpx
 
 from .errors import AuthorizationServiceUnavailable
+from .observability import record_auth_event
 
 
 @dataclass(frozen=True)
@@ -78,15 +79,43 @@ class OAuthServiceClient:
                     break
             except httpx.RequestError:
                 if attempt:
+                    record_auth_event(
+                        "token_acquisition",
+                        outcome="unavailable",
+                        client_id=self.client_id,
+                        audience=self.audience,
+                    )
                     raise AuthorizationServiceUnavailable(
                         "OAuth token service unavailable"
                     ) from None
             await asyncio.sleep(0)
         if response is None or response.status_code >= 500:
+            record_auth_event(
+                "token_acquisition",
+                outcome="unavailable",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthorizationServiceUnavailable("OAuth token service unavailable")
         if response.status_code != 200:
+            record_auth_event(
+                "token_acquisition",
+                outcome="rejected",
+                client_id=self.client_id,
+                audience=self.audience,
+                status_code=response.status_code,
+            )
             raise AuthorizationServiceUnavailable("OAuth client authentication failed")
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            record_auth_event(
+                "token_acquisition",
+                outcome="invalid_response",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
+            raise AuthorizationServiceUnavailable("Invalid OAuth token response") from exc
         try:
             token = ServiceToken(
                 access_token=str(payload["access_token"]),
@@ -102,7 +131,20 @@ class OAuthServiceClient:
             or token.audience != self.audience
             or not set(self.scopes).issubset(token.scope.split())
         ):
+            record_auth_event(
+                "token_acquisition",
+                outcome="invalid_response",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthorizationServiceUnavailable("Invalid OAuth token response")
+        record_auth_event(
+            "token_acquisition",
+            outcome="success",
+            client_id=self.client_id,
+            audience=self.audience,
+            expires_in=token.expires_in,
+        )
         return token
 
     async def aclose(self) -> None:
@@ -170,10 +212,32 @@ class SyncOAuthServiceClient:
             except httpx.RequestError:
                 continue
         if response is None or response.status_code >= 500:
+            record_auth_event(
+                "token_acquisition",
+                outcome="unavailable",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthorizationServiceUnavailable("OAuth token service unavailable")
         if response.status_code != 200:
+            record_auth_event(
+                "token_acquisition",
+                outcome="rejected",
+                client_id=self.client_id,
+                audience=self.audience,
+                status_code=response.status_code,
+            )
             raise AuthorizationServiceUnavailable("OAuth client authentication failed")
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            record_auth_event(
+                "token_acquisition",
+                outcome="invalid_response",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
+            raise AuthorizationServiceUnavailable("Invalid OAuth token response") from exc
         try:
             token = ServiceToken(
                 access_token=str(payload["access_token"]),
@@ -189,7 +253,20 @@ class SyncOAuthServiceClient:
             or token.audience != self.audience
             or not set(self.scopes).issubset(token.scope.split())
         ):
+            record_auth_event(
+                "token_acquisition",
+                outcome="invalid_response",
+                client_id=self.client_id,
+                audience=self.audience,
+            )
             raise AuthorizationServiceUnavailable("Invalid OAuth token response")
+        record_auth_event(
+            "token_acquisition",
+            outcome="success",
+            client_id=self.client_id,
+            audience=self.audience,
+            expires_in=token.expires_in,
+        )
         return token
 
     def close(self) -> None:

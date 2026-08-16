@@ -2,6 +2,8 @@ import asyncio
 
 import httpx
 import pytest
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 
 from service_auth.client import OAuthServiceClient, SyncOAuthServiceClient
 from service_auth.errors import (
@@ -10,6 +12,11 @@ from service_auth.errors import (
     PermissionDenied,
 )
 from service_auth.introspection import OAuthIntrospectionClient
+from service_auth.fastapi import (
+    build_service_principal_dependency,
+    parse_delegated_user_token,
+)
+from service_auth.observability import record_auth_event
 
 
 @pytest.mark.asyncio
@@ -176,3 +183,38 @@ async def test_introspection_rejects_expired_active_payload():
     with pytest.raises(AuthenticationFailed):
         await introspector.authenticate("opaque")
     await http.aclose()
+
+
+def test_structured_event_redacts_credential_fields(caplog):
+    with caplog.at_level("INFO", logger="service_auth.events"):
+        record_auth_event(
+            "test",
+            audience="upload-api",
+            access_token="must-not-appear",
+            client_secret="must-not-appear-either",
+        )
+    assert "upload-api" in caplog.text
+    assert "must-not-appear" not in caplog.text
+
+
+def test_delegated_user_token_uses_separate_header_contract():
+    assert parse_delegated_user_token("Bearer internal-user-jwt") == "internal-user-jwt"
+    with pytest.raises(HTTPException) as exc:
+        parse_delegated_user_token("Basic unsupported")
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_fastapi_dependency_maps_permission_denial_to_403():
+    class DenyingIntrospector:
+        async def authenticate(self, token, required_permissions):
+            raise PermissionDenied("Required service permission is missing")
+
+    dependency = build_service_principal_dependency(
+        DenyingIntrospector(), "upload.artifacts.lease"
+    )
+    with pytest.raises(HTTPException) as exc:
+        await dependency(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials="opaque")
+        )
+    assert exc.value.status_code == 403

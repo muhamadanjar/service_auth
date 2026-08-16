@@ -10,4 +10,5 @@ src/service_auth/errors.py
 src/service_auth/fastapi.py
 src/service_auth/introspection.py
 src/service_auth/models.py
+src/service_auth/observability.py
 tests/test_service_auth.py
