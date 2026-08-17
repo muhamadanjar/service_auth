@@ -16,7 +16,7 @@ from service_auth.fastapi import (
     build_service_principal_dependency,
     parse_delegated_user_token,
 )
-from service_auth.observability import record_auth_event
+from service_auth.observability import record_auth_event, set_auth_event_sink
 
 
 @pytest.mark.asyncio
@@ -192,9 +192,52 @@ def test_structured_event_redacts_credential_fields(caplog):
             audience="upload-api",
             access_token="must-not-appear",
             client_secret="must-not-appear-either",
+            request={
+                "Authorization": "Bearer nested-secret",
+                "metadata": {"password": "nested-password", "attempt": 1},
+            },
         )
     assert "upload-api" in caplog.text
     assert "must-not-appear" not in caplog.text
+    assert "nested-secret" not in caplog.text
+    assert "nested-password" not in caplog.text
+
+
+def test_structured_event_sink_receives_only_safe_fields():
+    received = []
+    previous = set_auth_event_sink(
+        lambda event, fields: received.append((event, dict(fields)))
+    )
+    try:
+        record_auth_event(
+            "legacy_static_token",
+            service_name="etl-api",
+            nested={"client_secret": "hidden", "outcome": "accepted"},
+        )
+    finally:
+        set_auth_event_sink(previous)
+
+    assert received == [
+        (
+            "legacy_static_token",
+            {"service_name": "etl-api", "nested": {"outcome": "accepted"}},
+        )
+    ]
+
+
+def test_structured_event_sink_failure_does_not_escape(caplog):
+    def failing_sink(_event, _fields):
+        raise RuntimeError("must-not-leak-secret")
+
+    previous = set_auth_event_sink(failing_sink)
+    try:
+        with caplog.at_level("WARNING", logger="service_auth.events"):
+            record_auth_event("introspection", outcome="success")
+    finally:
+        set_auth_event_sink(previous)
+
+    assert "service_auth_event_sink_failed" in caplog.text
+    assert "must-not-leak-secret" not in caplog.text
 
 
 def test_delegated_user_token_uses_separate_header_contract():

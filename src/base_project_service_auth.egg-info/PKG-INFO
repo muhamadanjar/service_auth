@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: base-project-service-auth
-Version: 0.1.0
-Summary: Shared OAuth service-principal authentication for Base Project FastAPI services
-Requires-Python: >=3.11
-Requires-Dist: fastapi<1,>=0.115
-Requires-Dist: httpx<1,>=0.27

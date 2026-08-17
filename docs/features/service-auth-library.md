@@ -6,7 +6,11 @@ Execution Progress: [Python Service Auth Library Progress](../progress/service-a
 
 `base-project-service-auth` is the shared contract for machine-to-machine HTTP authentication between Python services.
 
-The package is currently internal-only. Service requirements use `-e ../service_auth`; container images must therefore be built from the monorepo `services/` directory so the sibling source exists at build and runtime. Publishing to a package registry is not required for this rollout.
+The package lives in `libs/service_auth/` — the standard monorepo location for shared libraries. Service requirements use `-e ../libs/service_auth[test]` for local development. For deployed environments, install via git+ssh:
+
+```bash
+pip install "base-project-service-auth @ git+ssh://git@github.com/anjar/base-project-apps.git@main#subdirectory=libs/service_auth"
+```
 
 ## Caller usage
 
@@ -43,6 +47,23 @@ principal = Depends(
 The resulting `ServicePrincipal` contains `client_id`, stable `service_name`, `audience`, permissions, and expiry. Tokens and client secrets are private fields and never included in library errors.
 
 Token acquisition, introspection, authorization denial, and legacy-token compatibility emit structured `service_auth.events` records. These records contain client/audience/outcome metadata only and can be converted into log-based counters and latency alerts.
+
+Services that use native metrics or tracing can register one process-local sink:
+
+```python
+from service_auth import set_auth_event_sink
+
+set_auth_event_sink(
+    lambda event, fields: auth_counter.labels(
+        event=event,
+        outcome=str(fields.get("outcome", "unknown")),
+    ).inc()
+)
+```
+
+Credential-like fields are removed recursively before logging or invoking the
+sink. Sink exceptions are reduced to a generic warning and never alter the auth
+decision. Call `set_auth_event_sink(None)` to detach it during shutdown or tests.
 
 ## Delegated user requests
 
